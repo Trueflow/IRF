@@ -15,6 +15,13 @@ def GameSetting(configlist, ENVname):
 
         print(f"[Environment Setting] {ENVname} : {team0_frame}-{team0_alg} vs {team1_frame}")
         print(f"Load Model / Train: {team0.load_model} / {team0.train_mode}")
+    elif team1_frame=='RBA':
+        env_path = f"RBA/{ENVname}/{team0_frame}vsRBA"
+        save_path = f"results/{team0_frame}vsRBA/{ENVname}/{team0_alg}/{date_time[4:8]}/{date_time[8:]}"
+        load_path[0] = configlist[0].load_path
+
+        print(f"[Environment Setting] {ENVname} : {team0_frame}-{team0_alg} vs {team1_frame}")
+        print(f"Load Model / Train: {team0.load_model} / {team0.train_mode}")
     else:
         team1_alg = configlist[1].Algorithm
         load_path[0] = configlist[0].load_path

@@ -1,104 +1,154 @@
-﻿from modules.Actor import REGISTRY as mac_registry
-#from modules.Actor.RNNActor import RNNActor
-from EnvSetting.TeamInfo import WriteSchemeInfo, SCHEMA_REGISTRY
-from Algorithm import REGISTRY as A_Registry
-from Utils.epsilon_schedule import epsilon_schedule
-from mlagents_envs.environment import UnityEnvironment, ActionTuple
-
-import gc
-import torch
+﻿from mlagents_envs.environment import UnityEnvironment, ActionTuple
 import numpy as np
+import torch
+
+from Algorithm import REGISTRY as A_Registry
+from EnvSetting.TeamInfo import WriteSchemeInfo
+from Utils.epsilon_schedule import epsilon_schedule
+from modules.Actor import REGISTRY as mac_registry
+
+
+def _reset_agent_episode_state(agent, args):
+    """Reset recurrent state and all episode-specific ID bookkeeping."""
+    actor = agent.get("actor")
+    if isinstance(actor, list):
+        agent["hidden_state"] = [
+            item.init_hidden_2() for item in actor
+        ]
+    elif actor is not None:
+        agent["hidden_state"] = actor.init_hidden()
+
+    agent["last_action"] = []
+    agent["agent_id_to_slot"] = {}
+    agent["slot_to_agent_id"] = [
+        None for _ in range(args.num_agents)
+    ]
+    agent["current_decision_ids"] = []
+    agent["episode_terminal_ids"] = set()
+
 
 def InitialSetting(team, info, env, save_path, load_path):
-    if info[0]=="marl":
-            dec, term = env.get_steps(info[-1]["behavior"])
-            info[-1]["agents_id"] = [id for id in dec.agent_id]
-            info[-1]["algorithm"] = info[-1]["algorithm"].lower()
-            algorithm, args = info[-1]["algorithm"], info[-1]["args"]
-            args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            # position= dec.obs[args.VEC_OBS][:,-2]
-            
-            # POCA 알고리즘은 여러 액터를 사용 / (사실 rnn_actor 인자에 action_size는 필요없음..)
-            if algorithm=="poca":
-                # 각 에이전트마다 별도의 액터 생성. input_size = obs_size
-                info[-1]["actor"] = [mac_registry["rnn"](args, args.obs_size, args.action_size) for _ in range(args.num_agents)]
-                # 각 에이전트마다 별도의 hidden state 생성 - init_hidden_2 사용
-                info[-1]["hidden_state"] = [actor.init_hidden_2() for actor in info[-1]["actor"]]
-            if args.use_last_action:
-                input_size = args.obs_size+args.action_size
-                info[-1]["actor"] = mac_registry["rnn"](args, input_size, args.action_size)
-                info[-1]["hidden_state"] = info[-1]["actor"].init_hidden()
-            else:
-                # 다른 알고리즘은 단일 액터 사용
-                info[-1]["actor"] = mac_registry["rnn"](args, args.obs_size, args.action_size)
-                info[-1]["hidden_state"] = info[-1]["actor"].init_hidden()
-                
-            # print(f"알고리즘 이름: '{info[-1]['algorithm']}'")
-            # print(f"사용 가능한 스키마: {list(SCHEMA_REGISTRY.keys())}")
-            info[-1]["WriteScheme"] = WriteSchemeInfo(info[-1]["algorithm"], info[-1]["args"], team)
-            # print(f"WriteScheme 생성 완료: {list(info[-1]['WriteScheme'].keys())}")
-            info[-1]["epsilon_schedule"] = epsilon_schedule(args.eps_greedy)
-            info[-1]["epsilon_schedule"].init_schedule(args.train_mode)
-            
-            info[-1]["agent"] =  A_Registry[algorithm](info[-1]["args"], info[-1]["actor"], args.eps_greedy.start, 
-                                                       save_path+f"/team{team}MARL-{algorithm}",load_path)
-            info[-1]["agent"].SetOptimiser()
-            # ray_size, vec_size = dec.obs[args.RAY_OBS].shape, dec.obs[args.VEC_OBS][:,:-1].shape
-            # print(f"[Observation] Team0 : ray {ray_size} / vec {vec_size}")
-            del dec, term, algorithm, args
-            torch.cuda.empty_cache()
+    if info[0] != "marl":
+        return
+
+    decision, _ = env.get_steps(info[-1]["behavior"])
+    agent = info[-1]
+    agent["agents_id"] = [
+        int(value) for value in decision.agent_id
+    ]
+    agent["algorithm"] = agent["algorithm"].lower()
+    algorithm = agent["algorithm"]
+    args = agent["args"]
+    args.device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
+
+    if algorithm == "poca":
+        agent["actor"] = [
+            mac_registry["rnn"](
+                args, args.obs_size, args.action_size
+            )
+            for _ in range(args.num_agents)
+        ]
+    elif args.use_last_action:
+        agent["actor"] = mac_registry["rnn"](
+            args,
+            args.obs_size + args.action_size,
+            args.action_size,
+        )
+    else:
+        agent["actor"] = mac_registry["rnn"](
+            args, args.obs_size, args.action_size
+        )
+
+    _reset_agent_episode_state(agent, args)
+    agent["WriteScheme"] = WriteSchemeInfo(
+        algorithm, args, team
+    )
+    agent["epsilon_schedule"] = epsilon_schedule(args.eps_greedy)
+    agent["epsilon_schedule"].init_schedule(args.train_mode)
+    agent["agent"] = A_Registry[algorithm](
+        args,
+        agent["actor"],
+        args.eps_greedy.start,
+        save_path + f"/team{team}MARL-{algorithm}",
+        load_path,
+    )
+    agent["agent"].SetOptimiser()
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
 
 def episodeEnd(step, startStep, TeamInfo, ENVargs, win_count):
     for team, info in TeamInfo.items():
         args = info[1]
-        scheme = info[-1]["WriteScheme"]
-        scheme["EpisodeInfo"]["episode_length"].append(step - startStep)
-        scheme["episode"] +=1
-        scheme["EpisodeInfo"]["scores"].append(np.sum(scheme["score"], axis=0))
+        agent = info[-1]
+        scheme = agent["WriteScheme"]
+        scheme["EpisodeInfo"]["episode_length"].append(
+            step - startStep
+        )
+        scheme["episode"] += 1
+        scheme["EpisodeInfo"]["scores"].append(
+            np.sum(scheme["score"], axis=0)
+        )
         if args.train_mode:
-            info[-1]["agent"].epsilon = info[-1]["epsilon_schedule"].update_epsilon(scheme["episode"])
+            agent["agent"].epsilon = (
+                agent["epsilon_schedule"].update_epsilon(
+                    scheme["episode"]
+                )
+            )
 
-        # scheme["active_agents"] = info[-1][agents_id]
-        if scheme["episode"] % ENVargs.print_interval==0:
-            win_rate = win_count[team] / sum(win_count.values()) if sum(win_count.values())>0 else 0
-            if ENVargs.training==args.train_mode:
-                if info[0]=="hrl":
-                    info[-2]["agent"].write_summary(scheme, info[-2]["WriteScheme"], ENVargs, win_rate)
-                info[-1]["agent"].write_summary(scheme, step, ENVargs, win_rate)
+        if scheme["episode"] % ENVargs.print_interval == 0:
+            total_wins = sum(win_count.values())
+            win_rate = (
+                win_count[team] / total_wins if total_wins > 0 else 0
+            )
+            if ENVargs.training == args.train_mode:
+                agent["agent"].write_summary(
+                    scheme, step, ENVargs, win_rate
+                )
 
-        if args.train_mode and scheme["episode"] % ENVargs.save_interval==0:
-            info[-1]["agent"].save_model() # lower&marl
-        del args
-    torch.cuda.empty_cache()
+        if (
+            args.train_mode
+            and scheme["episode"] % ENVargs.save_interval == 0
+        ):
+            agent["agent"].save_model()
+
 
 def memoryClear(TeamInfo):
-    for team, info in TeamInfo.items():
-        info[-1]["WriteScheme"]["score"].clear()
-        info[-1]["agent"].memoryClear()
+    for _, info in TeamInfo.items():
+        args = info[1]
+        agent = info[-1]
+        agent["WriteScheme"]["score"].clear()
+        agent["agent"].memoryClear()
+        _reset_agent_episode_state(agent, args)
+
 
 def calculate_win(env, TeamInfo, win_count, RSAmode):
     for team, info in TeamInfo.items():
         args = info[1]
-        _, term = env.get_steps(info[-1]["behavior"])
-        # print(term.obs)
-        isWin = term.obs[args.VEC_IDX][0,-2].astype(int)
-        if isWin==1: win_count[team] += 1
-        if RSAmode:
-            if isWin==-1: win_count[1] += 1
+        _, terminal = env.get_steps(info[-1]["behavior"])
+        if len(terminal.agent_id) == 0:
+            continue
+        is_win = int(terminal.obs[args.VEC_IDX][0, -2])
+        if is_win == 1:
+            win_count[team] += 1
+        if RSAmode and is_win == -1:
+            win_count[1] += 1
+
 
 def LearningEnd(step, ENVargs, TeamInfo):
     for _, info in TeamInfo.items():
         args = info[1]
+        agent = info[-1]
         if args.train_mode:
-            info[-1]["agent"].save_model()
-            # if info[0]=="hrl":
-               # info[-2]["agent"].save_model()
-            info[-1]["WriteScheme"]["score"].clear()
-            info[-1]["WriteScheme"]["episode"] = 0
-            info[-1]["agent"].memoryClear()
-            args.train_mode = False # team hyperparameter
-        
+            agent["agent"].save_model()
+            agent["WriteScheme"]["score"].clear()
+            agent["WriteScheme"]["episode"] = 0
+            agent["agent"].memoryClear()
+            _reset_agent_episode_state(agent, args)
+            args.train_mode = False
+
     ENVargs.training = False
     print("Test Start")
-
-

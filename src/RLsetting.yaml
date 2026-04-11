@@ -8,7 +8,7 @@ LearningControl:
   save_interval: 5 # model checkpoint save episode interval
 # ------ Game & learner Parameters ------ [Blue(team0), Red(team1)] Learning Sequence Setting
 Framework: ["marl", "rsa"] # Train - ["marl", "rsa"] / Comparative Test - ["marl", "marl"]
-Algorithm: ["irf","irf"] # algorithm - irf, coma, poca(ma-poca), cds, emc
+Algorithm: ["irf","irf"] # algorithm - irf, coma, cds
 train_mode: [True, False] # [team0, team1]
 load_model: [False, False] # [team0, team1]
 load_path: 

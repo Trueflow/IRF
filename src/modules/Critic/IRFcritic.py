@@ -1,3 +1,6 @@
+# Adapted from: https://github.com/yalidu/liir
+# Original project: LIIR: Learning Individual Intrinsic Reward in Multi-Agent Reinforcement Learning
+# Upstream license: MIT
 import torch
 import torch.nn
 import torch.nn.functional as F

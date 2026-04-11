@@ -9,6 +9,10 @@ results/
 *.pth
 *.pt
 
+build/*
+!build/README.md
+!build/*.zip
+
 .env
 .DS_Store
 Thumbs.db
